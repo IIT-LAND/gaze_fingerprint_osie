@@ -1,0 +1,728 @@
+---
+title: "Gi Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Gaze fingerprint analysis
+
+Load libraries and other custom code.
+
+```{r, warning=FALSE, message=FALSE}
+library(easypackages)
+libraries("here","ggplot2","ggridges","reshape2","patchwork","RColorBrewer",
+          "plotrix","tidyverse","cluster","ggpackets","wordcloud","proxy",
+          "ggeasy","NbClust","MASS","robustbase","MKinfer","impute","ggheatmap", 
+          "janitor", "lme4", "lmtest","matlabr","psych")
+
+options(matlab.path = "/Applications/MATLAB_R2021b.app/bin")
+
+codepath = here("code")
+resultpath = here("results")
+plot_path = here("plots")
+source(file.path(codepath,"utils.R"))
+
+plot_title_name = "Gi"
+
+WEIGHT = "none"
+
+nstimuli = 700
+fdr_thresh = 0.05
+nperm = 1000
+```
+
+## Read in data files
+
+```{r, warning=FALSE, message=FALSE}
+stim_names = character(length=nstimuli)
+stim_ids = character(length=nstimuli)
+for (i in 1:nstimuli){
+  stim_names[i] = sprintf("stim%03d",i)
+  stim_ids[i] = sprintf("1%03d",i)
+}
+
+# read in semantic feature file that tells us which features go along with which stimuli
+semantic_features_annot =read.csv(file.path(codepath, "semantic_features.csv"))
+semantic_features = colnames(semantic_features_annot)[2:ncol(semantic_features_annot)]
+
+semantic_features_annot2 =read.csv(file.path(codepath, "semantic_features_custom.csv"))
+semantic_features2 = colnames(semantic_features_annot2)[2:ncol(semantic_features_annot2)]
+
+semantic_features_annot = cbind(semantic_features_annot, semantic_features_annot2[,semantic_features2])
+semantic_features = colnames(semantic_features_annot)[2:ncol(semantic_features_annot)]
+
+# compute some extra categories from combinations of existing categories
+semantic_features_annot$social = (semantic_features_annot[,c("face")]==1 & semantic_features_annot[,c("human")]==1)*1
+semantic_features_annot$nonsocial = (semantic_features_annot[,c("human")]==0 & semantic_features_annot[,c("animal")]==0)*1
+semantic_features = colnames(semantic_features_annot)[2:ncol(semantic_features_annot)]
+
+# masks for each semantic category
+stim_masks = list()
+for (sem_feat in semantic_features){
+  stim_masks[[sem_feat]] = as.character(semantic_features_annot$stimulus[semantic_features_annot[,sem_feat]==1])
+}
+
+# classifier output [0,1] subjects BY stimuli
+fname = file.path(resultpath, sprintf("weight_%s_classification_accuracy_perSubStim.csv",WEIGHT))
+classifier_output_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(classifier_output_sub_by_stim) = stim_ids
+
+# masks for each semantic category
+sublist = rownames(classifier_output_sub_by_stim)
+fp_masks = list()
+for (subid in sublist){
+  fp_masks[[subid]] = colnames(classifier_output_sub_by_stim)[classifier_output_sub_by_stim[subid,]==1]
+}
+
+# classifier output [0,1] stimuli BY perm
+fname = file.path(resultpath, sprintf("weight_%s_classification_accuracy_perStim_perm.csv",WEIGHT))
+classifier_output_stim_by_perm = read.csv(fname, row.names=1, na.strings = "NaN")
+
+# fingerprint ratios subject by stimulus
+fname = file.path(resultpath, sprintf("weight_%s_fingerprintratios_perSubStim.csv",WEIGHT))
+fpratio_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(fpratio_sub_by_stim) = stim_ids
+
+# mean fingerprint ratios stimulus by perm
+fname = file.path(resultpath, sprintf("weight_%s_mean_fingerprintratios_perStim_perm.csv",WEIGHT))
+mean_fpratio_stim_by_perm = read.csv(fname, row.names=1, na.strings = "NaN")
+
+# intrasubject correlation subject by stimulus
+fname = file.path(resultpath, sprintf("weight_%s_intrasubjectR_perSubStim.csv",WEIGHT))
+intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(intrasubR_sub_by_stim) = stim_ids
+
+# mean intersubject correlation subject by stimulus
+fname = file.path(resultpath, sprintf("weight_%s_mean_intersubjectR_perSubStim.csv",WEIGHT))
+mean_intersubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(mean_intersubR_sub_by_stim) = stim_ids
+
+# nfingerprintable stimuli per subject
+fname = file.path(resultpath, sprintf("weight_%s_classification_nfingerprintableStimuli_perSub.csv",WEIGHT))
+nfpstim_per_subject_original = read.csv(fname, row.names=1, na.strings = "NaN")
+
+#weight nfp stimuli by the missing values in the intra correlation matrix
+nfpstim_per_subject_original$missing_tot <- 700 - rowSums(is.na(intrasubR_sub_by_stim)) #calculate number of complete obs
+nfpstim_per_subject_original$missing_ratio <- (nfpstim_per_subject_original$missing_tot/700) #divide complete obs by total number of stimuli
+nfpstim_per_subject_original <- nfpstim_per_subject_original %>% mutate(fpstimuli_ratioed = (round(missing_ratio*nfingerprintable_stimuli, 0))) #multiple the complete obs to stimuli number ratio by the number of fingerprintable stimuli (this will reduce the count of fp stimuli for participants with missing data)
+
+#create a new dataframe that contains the weighted number of fp stimuli
+nfpstim_per_subject <- data.frame(nfpstim_per_subject_original$fpstimuli_ratioed)
+rownames(nfpstim_per_subject) <- rownames(nfpstim_per_subject_original)
+nfpstim_per_subject <- nfpstim_per_subject %>% rename(nfingerprintable_stimuli = nfpstim_per_subject_original.fpstimuli_ratioed)
+
+# nfingerprintable stimuli subject by perm
+fname = file.path(resultpath, sprintf("weight_%s_classification_nfingerprintableStimuli_perSub_perm.csv",WEIGHT))
+nfpstim_sub_by_perm_original = read.csv(fname, row.names=1, na.strings = "NaN")
+nfpstim_sub_by_perm = round(nfpstim_sub_by_perm_original*nfpstim_per_subject_original$missing_ratio, 0)
+```
+
+
+## Compute summary identification matrices by semantic features
+
+```{r, warning=FALSE, message=FALSE}
+code2run = sprintf("cd %s", codepath)
+code2run = sprintf("%s; resultpath = '%s'",code2run, resultpath)
+code2run = sprintf("%s; load('%s')",code2run, file.path(resultpath, "weight_none_gsa_res.mat"))
+
+code2run = sprintf("%s; id_mat = gsa_res.id_mat; id_mat_symm = id_mat; tmp_mat = squeeze(id_mat(:,:,1)); mask = tril(tmp_mat)~=0; for istim = 1:size(id_mat,3); tmp_mat = squeeze(id_mat(:,:,istim)); tmp_mat_rev = tmp_mat'; tmp_mat2use = tmp_mat; tmp_mat2use(mask) = tmp_mat_rev(mask); id_mat_symm(:,:,istim) = tmp_mat2use; end; id_mat = id_mat_symm; tmp_ct = nan(size(id_mat,1),size(id_mat,2)); for isub = 1:size(id_mat,1); tmp_mat = squeeze(id_mat(isub,:,:))'; tmp_ct(isub,:) = nanmedian(tmp_mat,1); end; data2use = tmp_ct; tab2write = cell2table([gsa_res.subids, num2cell(data2use)], 'VariableNames',[{'subid'},gsa_res.subids']); file2write = fullfile(resultpath,'weight_none_id_mat_all.csv'); writetable(tab2write, file2write)
+",code2run)
+
+code2run = sprintf("%s; semantic_features = readtable('%s')", code2run, file.path(resultpath, "semantic_features.csv"))
+code2run = sprintf("%s; features2use = semantic_features.Properties.VariableNames(3:end)", code2run)
+
+code2run = sprintf("%s; for i=1:length(features2use); curr_feature = features2use{i}; disp(curr_feature); feature_mask = semantic_features.(curr_feature)==1; tmp_ct = nan(size(id_mat,1),size(id_mat,2)); for isub = 1:size(id_mat,1); tmp_mat = squeeze(id_mat(isub,:,feature_mask))'; tmp_ct(isub,:) = nanmedian(tmp_mat,1); end; data2use = tmp_ct;  tab2write = cell2table([gsa_res.subids, num2cell(data2use)], 'VariableNames',[{'subid'},gsa_res.subids']); file2write = fullfile(resultpath,['weight_none_id_mat_',curr_feature,'.csv']); writetable(tab2write, file2write); end; exit", code2run)
+
+res = run_matlab_code(code2run)
+```
+
+
+## Read in semantic features and cluster them
+
+```{r, warning=FALSE, message=FALSE}
+# heatmap of semantic feature matrix to see which semantic features are usually co-occuring 
+df_sem_feat = as.matrix(semantic_features_annot[,2:ncol(semantic_features_annot)])
+
+clust_method = "ward.D2"
+dist_method = "binary" 
+nbc_index = "silhouette"
+
+# cluster stimuli
+stim_feat_res = NbClust(data = as.matrix(df_sem_feat), 
+                       index = nbc_index, 
+                       distance = dist_method, 
+                       method = clust_method, 
+                       min.nc=2, max.nc=6)
+k_stim = stim_feat_res$Best.nc
+row_cols = brewer.pal(k_stim[[1]], "Set1")[stim_feat_res$Best.partition]
+
+# add clustering solution to semantic_features_annot
+cluster_df = data.frame(stimulus = factor(semantic_features_annot$stimulus), 
+                        cluster = factor(stim_feat_res$Best.partition))
+semantic_features_annot = merge(cluster_df,semantic_features_annot[, c("stimulus",semantic_features)], by = "stimulus") 
+
+# cluster semantic features
+sem_feat_res = NbClust(data = as.matrix(t(df_sem_feat)), 
+                       index = nbc_index, 
+                       distance = dist_method, 
+                       method = clust_method, 
+                       min.nc=2, max.nc=6)
+k_sem_feat = sem_feat_res$Best.nc
+col_cols = brewer.pal(k_sem_feat[[1]], "Set1")[sem_feat_res$Best.partition]
+
+# make heatmap
+stim_hmap_res = heatmap(as.matrix(df_sem_feat), 
+        hclustfun=function(d) hclust(d, method=clust_method), 
+        scale = "none", 
+        RowSideColors=row_cols, 
+        ColSideColors=col_cols)
+stim_order_dendrogram = stim_hmap_res$rowInd
+stim_hmap_res
+
+cluster_res = data.frame(clust_labels = stim_feat_res$Best.partition, clust_colors = row_cols)
+ctab = as.data.frame(table(cluster_res$clust_labels))
+for (i in 1:k_stim[[1]]){
+  tmp_col = as.character(unique(cluster_res$clust_colors[cluster_res$clust_labels==i]))
+  ctab$color[i] = plotrix::color.id(tmp_col)
+  ctab$clust_num[i] = unique(cluster_res$clust_labels[cluster_res$clust_labels==i])
+}
+ctab
+
+nfpstim_per_subject$c1 = rowSums(classifier_output_sub_by_stim[,cluster_res$clust_labels==1])
+nfpstim_per_subject$c2 = rowSums(classifier_output_sub_by_stim[,cluster_res$clust_labels==2])
+
+# get sum of stimuli within semantic clusters and plot as a word cloud
+sem_feat_cols = unique(col_cols)
+stim_cols = unique(row_cols)
+```
+
+
+
+## Can we gaze fingerprint people?
+
+```{r, warning=FALSE, message=FALSE}
+# function to do gaze fingerprint classification
+gaze_fingerprint_classifier <- function(file2use, na_mask, nperm=0){
+  tmp_data = read.csv(file2use, row.names=1)
+  tmp_data = tmp_data[!na_mask,!na_mask]
+  tmp_res = matrix(nrow = dim(tmp_data)[1], ncol=3)
+  for (isub in 1:dim(tmp_data)[1]){
+    tmp_res[isub,1] = isub 
+    tmp_res[isub,2] = which(tmp_data[isub,]==max(tmp_data[isub,])) 
+  }
+  tmp_res[,3] = tmp_res[,1]==tmp_res[,2]
+  accuracy = sum(tmp_res[,3])/dim(tmp_data)[1]
+  
+  result = data.frame(matrix(nrow = 1, ncol = 3))
+  colnames(result) = c("accuracy", "mean_null", "pval")
+  result$accuracy = accuracy
+
+  if (nperm>0){
+    tmp_perm_res = data.frame(matrix(nrow = nperm, ncol = 2))
+    colnames(tmp_perm_res) = c("perm_num","accuracy")
+    for (iperm in 1:nperm){
+      # print(iperm)
+      subids = rownames(tmp_data)
+      set.seed(iperm)
+      rand_perm = sample(length(subids))
+      perm_tmp_data = tmp_data[subids[rand_perm],]
+      
+      perm_tmp_res = matrix(nrow = dim(perm_tmp_data)[1], ncol=3)
+      for (isub in 1:dim(perm_tmp_data)[1]){
+        perm_tmp_res[isub,1] = isub 
+        perm_tmp_res[isub,2] = which(perm_tmp_data[isub,]==max(perm_tmp_data[isub,])) 
+      }
+      perm_tmp_res[,3] = perm_tmp_res[,1]==perm_tmp_res[,2]
+      perm_accuracy = sum(perm_tmp_res[,3])/dim(perm_tmp_data)[1]
+      tmp_perm_res[iperm, "perm_num"] = iperm
+      tmp_perm_res[iperm, "accuracy"] = perm_accuracy
+    }
+    
+    p_value = (sum(tmp_perm_res$accuracy>=accuracy)+1)/(nperm+1)
+    result$pval = p_value
+    result$mean_null = mean(tmp_perm_res$accuracy)
+  }
+
+  return(result)
+} # function gaze_fingerprint_classifier
+
+# subjects to remove because of too many NAs
+na_mask = rowSums(is.na(intrasubR_sub_by_stim))>(700*0.15)
+
+features2use = c("all", semantic_features)
+
+gfp_res = data.frame(matrix(nrow = length(features2use), ncol = 3))
+colnames(gfp_res) = c("accuracy", "mean_null", "pval")
+rownames(gfp_res) = features2use
+for (ifeature in 1:length(features2use)){
+  file2use = file.path(resultpath,sprintf("weight_%s_id_mat_%s.csv",WEIGHT, features2use[ifeature]))
+  gfp_res[ifeature,] = gaze_fingerprint_classifier(file2use, na_mask, nperm=nperm)
+}
+gfp_res
+
+data2plot = gfp_res
+data2plot$feature = rownames(gfp_res)
+data2plot = data2plot %>% filter(!feature=="all")
+data2plot$cluster = NA
+red_clust = c("text","watchability")
+yellow_clust = c("animal")
+green_clust = c("emotion","sound")
+purple_clust = c("smell","operability","nonsocial","taste")
+blue_clust = c("human","touched","social","face","motion","gazed")
+orange_clust = c("touch")
+data2plot$cluster[is.element(data2plot$feature,red_clust)] = "red"
+data2plot$cluster_color[is.element(data2plot$feature,red_clust)] = "#E41A1C"
+data2plot$cluster[is.element(data2plot$feature,blue_clust)] = "blue"
+data2plot$cluster_color[is.element(data2plot$feature,blue_clust)] = "#377EB8"
+data2plot$cluster[is.element(data2plot$feature,green_clust)] = "green"
+data2plot$cluster_color[is.element(data2plot$feature,green_clust)] = "#4DAF4A"
+data2plot$cluster[is.element(data2plot$feature,purple_clust)] = "purple"
+data2plot$cluster_color[is.element(data2plot$feature,purple_clust)] = "#984EA3"
+data2plot$cluster[is.element(data2plot$feature,orange_clust)] = "orange"
+data2plot$cluster_color[is.element(data2plot$feature,orange_clust)] = "#FF7F00"
+data2plot$cluster[is.element(data2plot$feature,yellow_clust)] = "yellow"
+data2plot$cluster_color[is.element(data2plot$feature,yellow_clust)] = "#FFFF33"
+
+data2plot$cluster = factor(data2plot$cluster)
+data2plot$feature = factor(data2plot$feature, levels = rev(c("watchability","touched","human","social","face","taste","touch","motion","emotion","text","operability","gazed","nonsocial","smell","sound","animal")))
+
+# load in bootstrap accuracy for all stimuli
+bootaccall = read.csv(file.path(resultpath,"bootstrap_accuracy_95CIs.csv"))
+
+p = ggplot(data = data2plot, aes(y = feature, x = accuracy, fill = cluster)) + geom_bar(stat = "identity") + geom_vline(xintercept=gfp_res["all","accuracy"]) + geom_vline(xintercept=bootaccall[1,"low95"], linetype = "longdash") + geom_vline(xintercept=bootaccall[1,"hi95"], linetype = "longdash") + scale_fill_manual(values = c("#377EB8","#4DAF4A","#FF7F00","#984EA3","#E41A1C","#FFFF33")) + ylab("Semantic Feature") + xlab("Accuracy") + coord_cartesian(xlim=c(0.25,0.80)) + guides(fill="none") + ggtitle(plot_title_name) + easy_center_title()
+ggsave(filename = file.path(plot_path, "fingerprint_accuracy_global_semantic_features.pdf"),
+       width = 4, height = 5)
+p
+
+wordcloud(words = data2plot$feature, 
+                  freq = data2plot$accuracy^12, 
+                  random.order = FALSE, 
+                  rot.per=0, 
+                  colors=data2plot$cluster_color, 
+                  ordered.colors=TRUE)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+df_res = classifier_output_sub_by_stim
+df_res = df_res[!na_mask,]
+df_res_perm = classifier_output_stim_by_perm
+nperm = ncol(df_res_perm)
+
+subs2use = rownames(df_res)
+df2plot = data.frame(stim_names = stim_names,
+                     stim_ids = stim_ids,
+                     accuracy = colSums(df_res[,stim_ids])/dim(df_res)[1],
+                     site="IIT")
+df2plot$site = factor(df2plot$site)
+
+# calculate p-values based on permutation accuracies
+for (istim in 1:nstimuli){
+  df2plot$pval[istim] = (sum(df_res_perm[istim,]>=df2plot$accuracy[istim])+1)/(nperm+1)
+}
+
+# calculate FDR
+df2plot$fdr = p.adjust(df2plot$pval, method = "fdr")
+df2plot$fingerprint = "No"
+df2plot$fingerprint[df2plot$fdr<=fdr_thresh] = "Yes"
+
+df2plot = merge(df2plot, semantic_features_annot, by.x = "stim_ids", by.y= "stimulus")
+df2plot$stim_cluster_name = "C2"
+df2plot$stim_cluster_name[df2plot$cluster==1] = "C1"
+
+## Accuracy to fingerprintability plots
+
+# make accuracy plot across all stimuli
+p1 = ggplot(data = df2plot, aes(x = fingerprint, y = accuracy, colour=fingerprint)) + 
+  geom_jitter(width=0.1, alpha = 0.5) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), fill=NA, colour="black") + 
+  scale_colour_manual(values = c("orange","dodger blue")) + guides(colour=FALSE) +
+  xlab("Fingerprintable") + 
+  ylab("Accuracy") + ggtitle(plot_title_name) + easy_center_title()
+
+# make accuracy plot, but color according to stimulus cluster
+p2 = ggplot(data = df2plot, aes(x = stim_cluster_name, y = accuracy, colour=stim_cluster_name)) +
+  geom_jitter(width=0.1, alpha = 0.5) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), fill=NA, colour="black") + 
+  guides(colour=FALSE) + scale_colour_manual(values = c("#E41A1C","#377EB8")) + 
+  xlab("Stimulus Cluster") + 
+  ylab("Accuracy") + ggtitle(plot_title_name) + easy_center_title()
+
+p_final = p1+p2
+p_final
+
+# tabulate number of stimuli where fingerprinting is possible or not
+table(df2plot$fingerprint)
+
+# what percentage of the 700 stimuli allow us to gaze fingerprint?
+sum(df2plot$fingerprint=="Yes")/nstimuli
+
+# tabulate number of stimuli where fingerprinting is possible or not, by stimulus cluster
+table(df2plot$fingerprint, df2plot$stim_cluster_name)
+
+# chi-square test on that fingerprint by stimulus cluster contingency table
+chisq.test(table(df2plot$fingerprint, df2plot$stim_cluster_name))
+
+# t-test comparing accuracy of C2 vs C1 stimuli
+t.test(df2plot$accuracy[df2plot$stim_cluster_name=="C2"], df2plot$accuracy[df2plot$stim_cluster_name=="C1"])
+
+# Cohen's d effect size for accuracy of C2 vs C1 stimuli
+dres = cohens_d(df2plot$accuracy[df2plot$stim_cluster_name=="C2"], df2plot$accuracy[df2plot$stim_cluster_name=="C1"]); dres
+
+# Accuracies across all semantic feature categories
+cols2use = c("feature","accuracy","std","sem")
+result_df = data.frame(matrix(nrow = length(semantic_features), ncol = length(cols2use)))
+rownames(result_df) = semantic_features
+colnames(result_df) = cols2use
+
+for (sem_feat in semantic_features){
+  mask = semantic_features_annot[sem_feat]==1
+  stims2use = stim_ids[mask]
+  result_df[sem_feat,"feature"] = sem_feat
+  result_df[sem_feat,"accuracy"] = mean(colSums(df_res[stims2use])/dim(df_res)[1])
+  result_df[sem_feat,"std"] = sd(colSums(df_res[,stims2use])/dim(df_res)[1])
+  result_df[sem_feat,"sem"] = sd(colSums(df_res[,stims2use])/dim(df_res)[1])/sqrt(sum(mask))
+}
+
+# Fingerprint Ratios across all semantic feature categories
+cols2use = semantic_features
+result_df_fpr = data.frame(matrix(nrow = dim(fpratio_sub_by_stim)[1], ncol = length(semantic_features)))
+rownames(result_df_fpr) = rownames(fpratio_sub_by_stim)
+colnames(result_df_fpr) = cols2use
+
+for (sem_feat in semantic_features){
+  mask = semantic_features_annot[sem_feat]==1
+  stims2use = stim_ids[mask]
+  result_df_fpr[,sem_feat] = rowMeans(fpratio_sub_by_stim[,stims2use], na.rm= TRUE)
+}
+result_df_fpr$subid = rownames(result_df_fpr)
+df2plot = melt(result_df_fpr, id.vars = "subid")
+
+result_df$feature = with(result_df, reorder(feature, accuracy))
+feature_clusters = data.frame(feature = names(sem_feat_res$Best.partition), cluster = sem_feat_res$Best.partition)
+result_df = merge(result_df, feature_clusters, by = "feature")
+result_df$cluster = factor(result_df$cluster) 
+result_df
+
+p = ggplot(data = result_df, aes(y = feature, x = accuracy, fill = cluster)) + 
+  geom_bar(stat = "identity") + 
+  geom_errorbar(aes(xmin=accuracy-sem, xmax=accuracy+sem), width=0.2) +
+  guides(fill=FALSE) + 
+  coord_cartesian(xlim = c(0.035, 0.09)) + 
+  xlab("Accuracy") + ylab("Semantic Feature") + 
+  scale_fill_manual(values = unique(col_cols)) + ggtitle(plot_title_name) + easy_center_title()
+ggsave(filename = file.path(plot_path, "fingerprint_accuracy_local_semantic_features.pdf"),
+       width = 4, height = 5)
+p
+```
+
+## How many stimuli can we use to gaze fingerprint an individual and how does this vary between people?
+
+```{r, warning=FALSE, message=FALSE}
+fp_res = nfpstim_per_subject
+fp_res$subids = rownames(fp_res)
+fp_perm_res = nfpstim_sub_by_perm
+
+na_mask = rowSums(is.na(intrasubR_sub_by_stim))>(700*0.15)
+fp_res = fp_res %>% filter(!na_mask)
+fp_perm_res = fp_perm_res %>% filter(!na_mask)
+
+# figure out p-values for each subject based on permutation nfingerprintable stim 
+for (isub in 1:dim(fp_res)[1]){
+  fp_res$pval[isub] = (sum(fp_perm_res[isub,]>=fp_res$nfingerprintable_stimuli[isub])+1)/(nperm+1)
+}
+
+fp_res$fdr = p.adjust(fp_res$pval, method = "fdr")
+
+fp_res$Fingerprintable = "Yes"
+fp_res$Fingerprintable[fp_res$fdr>fdr_thresh] = "No"
+fp_perm_res$Fingerprintable = "Yes"
+fp_perm_res$Fingerprintable[fp_res$fdr>fdr_thresh] = "No"
+
+# subjects who have significantly more nfingerprintable stimuli than expected by chance
+fp_subs2include = fp_res$subids[fp_res$fdr<=fdr_thresh]
+print(sprintf("%d subjects of %d with statistically significant number of fingerprintable stimuli",
+              length(fp_subs2include), 
+              dim(fp_res)[1]))
+
+# subjects whose nfingerprintable stimuli is no better than chance
+fp_subs2exclude = fp_res$subids[fp_res$fdr>fdr_thresh] 
+print(sprintf("%d subjects of %d with non-statistically significant number of fingerprintable stimuli",
+              length(fp_subs2exclude), 
+              dim(fp_res)[1]))
+
+reorder_vect = order(fp_res[,"nfingerprintable_stimuli"])
+ordered_fp_res_subs = rownames(fp_res)[reorder_vect]
+ordered_fp_res = fp_res[ordered_fp_res_subs,]
+ordered_fp_res
+
+fp_res$subids = factor(fp_res$subids, levels = ordered_fp_res_subs)
+fp_perm_res$subids = rownames(fp_res)
+fp_perm_res$subids = factor(fp_perm_res$subids, levels = ordered_fp_res_subs)
+
+# melt perm data frame for plotting
+melted_fp_perm_res = melt(fp_perm_res,id.vars = c("subids","Fingerprintable"))
+
+# make plot
+markerSize = 7
+markerColor="blue"
+fontSize = 10
+
+# make ridges for the null distribution
+p = ggplot(melted_fp_perm_res, aes(x = value, y = subids, fill=Fingerprintable)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) + 
+  xlab("# of Fingerprintable Stimuli") + ggtitle("# Fingerprintable Stimuli")
+
+# add star for actual value
+p = p + geom_text(data = fp_res, aes(x = nfingerprintable_stimuli, y=subids), color=markerColor, label="*",size=markerSize) +
+  guides(color=FALSE, alpha=FALSE) + ggtitle(plot_title_name) + easy_center_title() + 
+  theme(axis.text.x = element_text(size=fontSize),
+        axis.text.y = element_text(size=fontSize),
+        axis.title.x = element_text(size=fontSize),
+        strip.text.x = element_text(size=fontSize),
+        axis.title.y = element_text(size=fontSize),
+        plot.title = element_text(hjust = 0.5))
+ggsave(p,filename = file.path(plot_path, "number_fingerprintable_stimuli_per_subject.pdf"),
+       width=6,height=7)
+p
+
+# make ggridges plot for gaze uniqueness index (GUI; aka fingerprint ratio)
+# test each subject for whether GUI is greater than the null value of 0 after log10 transformation (because GUI is positively skeweed). This will allow you to identify which subjects have an overall GUI across all 700 stimuli greater than the null value of 0.
+na_mask = rowSums(is.na(intrasubR_sub_by_stim))>(700*0.15)
+tmp_gui = fpratio_sub_by_stim %>% filter(!na_mask)
+tmp_gui = t(tmp_gui)
+
+gui_res_sub = data.frame(matrix(nrow = dim(tmp_gui)[2], ncol = 4))
+colnames(gui_res_sub) = c("subid","tstat","pval","fdr")
+rownames(gui_res_sub) = colnames(tmp_gui)
+subids2use = colnames(tmp_gui)
+for (sub in subids2use){
+  gui_res_sub[sub, "subid"] = sub
+  tres = t.test(log10(tmp_gui[,sub]), mu = 0)
+  gui_res_sub[sub, "tstat"] = tres$statistic[[1]]
+  gui_res_sub[sub, "pval"] = tres$p.value[[1]]
+}
+gui_res_sub$fdr = p.adjust(gui_res_sub$pval, method = "fdr")
+gui_res_sub$Unique = "Yes"
+# anything with tstat<0 of fdr>0.05 is not unique
+gui_res_sub$Unique[gui_res_sub$tstat<0 | gui_res_sub$fdr>0.05] = "No"
+gui_res_sub = gui_res_sub[order(gui_res_sub$tstat),]
+gui_res_sub$subid = factor(gui_res_sub$subid, levels = gui_res_sub$subid)
+table(gui_res_sub$Unique)
+gui_res_sub = gui_res_sub[order(-gui_res_sub$tstat),]
+gui_res_sub$uniqueness_rank = c(1:dim(gui_res_sub)[1]) # make gaze uniqueness ranking based on strength of tstat
+
+gui_res = fpratio_sub_by_stim %>% filter(!na_mask)
+gui_res$subid = rownames(gui_res)
+gui_res$subid = factor(gui_res$subid, levels = rev(gui_res_sub$subid))
+gui_res = merge(gui_res, gui_res_sub[,c("subid","Unique")])
+melted_gui_res = melt(gui_res, id.vars = c("subid","Unique"))
+
+# make ridges plot
+p = ggplot(melted_gui_res, aes(x = value, y = subid, fill=Unique)) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) + xlim(-1,7) + geom_vline(xintercept = 1) + 
+  xlab("Gaze Uniqueness Index (GUI)") + ggtitle(plot_title_name) + easy_center_title()
+ggsave(p,filename = file.path(plot_path, "gaze_uniqueness_index_per_subject.pdf"),
+       width=6,height=7)
+p
+
+# subjects to remove because of too many NAs
+na_mask = rowSums(is.na(intrasubR_sub_by_stim))>(700*0.15)
+
+# compute jaccard distance matrix which is percentage of overlap in fingerprintable stimuli
+jaccard_mat = as.matrix(dist(as.matrix(classifier_output_sub_by_stim), method = "binary"))
+jaccard_mat = jaccard_mat[-which(na_mask),-which(na_mask)]
+heatmap(as.matrix(jaccard_mat), 
+        hclustfun=function(d) hclust(d, method=clust_method),
+        scale = "none")
+
+# plot heatmap of classifier output matrix of subjects by stimuli matrix
+tmp_data = classifier_output_sub_by_stim[-which(na_mask),]
+heatmap(as.matrix(tmp_data), 
+        hclustfun=function(d) hclust(d, method=clust_method),
+        scale = "none")
+
+# Use the silhouette metric to determine number of clusters between k = 1 and k = n-1
+nb_clust_res = NbClust(data = as.matrix(tmp_data),index = "silhouette", distance = "euclidean",method = "ward.D2", min.nc=1,max.nc=dim(tmp_data)[1]-1)
+nb_clust_res$Best.nc
+```
+
+## Which semantic features are enriched as fingerprintable stimuli?
+
+### And, can we cluster people by these semantic feature profiles of fingerprintable stimuli?
+
+```{r, warning=FALSE, message=FALSE}
+df_sem_feat = data.frame(df_sem_feat)
+sem_feat_names = colnames(df_sem_feat)
+
+nsubs = dim(fpratio_sub_by_stim)[1]
+mean_fpr_per_sem_feat_res = data.frame(matrix(nrow = nsubs, ncol = length(sem_feat_names)))
+rownames(mean_fpr_per_sem_feat_res) = rownames(fpratio_sub_by_stim)
+colnames(mean_fpr_per_sem_feat_res) = sem_feat_names
+mean_fpr_per_sem_feat_res$all = NA
+for (isub in 1:nsubs){
+  for (isf in 1:length(sem_feat_names)){
+    # get mean fingerprint ratio
+    mean_fpr_per_sem_feat_res[isub, isf] = median(as.numeric(fpratio_sub_by_stim[isub,df_sem_feat[,isf]==1]), na.rm = TRUE)
+  } # for (isf in 1:length(sem_feat_names)){
+  mean_fpr_per_sem_feat_res[isub, "all"] = median(as.numeric(fpratio_sub_by_stim[isub,]), na.rm = TRUE)
+  mean_fpr_per_sem_feat_res[isub, "c1"] = median(as.numeric(fpratio_sub_by_stim[isub,cluster_res[,"clust_labels"]==1]), na.rm = TRUE)
+  mean_fpr_per_sem_feat_res[isub, "c2"] = median(as.numeric(fpratio_sub_by_stim[isub,cluster_res[,"clust_labels"]==2]), na.rm = TRUE)
+} # for (isub in 1:nsubs){
+
+df_res = classifier_output_sub_by_stim
+
+# remove subs that don't have statistically significant nfingerprintable stimuli
+df_res = df_res[fp_subs2include,]
+
+nsubs = dim(df_res)[1]
+
+nTotal = nstimuli
+
+enrich_res_OR = data.frame(matrix(nrow = nsubs, ncol = length(sem_feat_names)))
+colnames(enrich_res_OR) = sem_feat_names
+rownames(enrich_res_OR) = rownames(df_res)
+
+enrich_res_P = data.frame(matrix(nrow = nsubs, ncol = length(sem_feat_names)))
+colnames(enrich_res_P) = sem_feat_names
+rownames(enrich_res_P) = rownames(df_res)
+
+nfp_res = data.frame(matrix(nrow = nsubs, ncol=1))
+rownames(nfp_res) = rownames(df_res)
+colnames(nfp_res) = c("nFP")
+
+for (isub in 1:nsubs){
+  
+  nFP = sum(df_res[isub,])
+  nfp_res[isub,1] = nFP
+  fp_mask = df_res[isub,]==1
+  
+  for (isf in 1:length(sem_feat_names)){
+    semfeat2use = sem_feat_names[isf]
+    nSemantic = sum(df_sem_feat[,semfeat2use])
+    nFP_given_Semantic = sum(df_sem_feat[fp_mask,semfeat2use])
+    tmp_enrich_res = enrichmentTest(nFP_given_Semantic, nFP, nSemantic, nTotal)
+    enrich_res_OR[isub,semfeat2use] = tmp_enrich_res$OR
+    enrich_res_P[isub,semfeat2use] = tmp_enrich_res$p
+    
+  } # for (isf in 1:length(sem_feat_names)){
+  
+} # for (isub in 1:nsubs){
+
+
+clust_method = "ward.D2"
+nbclust_index = c("kl","ch","ccc","cindex","db","silhouette","duda","pseudot2",
+                  "ratkowsky","ptbiserial","gap","mcclain","gamma","gplus","tau",
+                  "sdindex")
+res = NbClust(data = enrich_res_OR, method = clust_method, index = nbclust_index)
+a = data.frame(res$Best.nc[1,]); colnames(a) = "k"; a$index = rownames(a)
+best_nk = as.numeric(names(table(a$k))[table(a$k)==max(table(a$k))])
+res = NbClust(data = enrich_res_OR, method = clust_method, index = "ch")
+row_subtype = res$Best.partition
+row_cols = brewer.pal(9, "Set1")[res$Best.partition]
+
+nbclust_index = c("kl","ch","cindex","db","silhouette","duda","pseudot2",
+                  "ratkowsky","ptbiserial","gap","mcclain","gamma","gplus","tau",
+                  "sdindex")
+res = NbClust(data = t(enrich_res_OR), method = clust_method, index=nbclust_index)
+a = data.frame(res$Best.nc[1,]); colnames(a) = "k"; a$index = rownames(a)
+best_nk = as.numeric(names(table(a$k))[table(a$k)==max(table(a$k))])
+res = NbClust(data = t(enrich_res_OR), method = clust_method, index="kl")
+col_cols = brewer.pal(9, "Set1")[res$Best.partition]
+feature_clusters = data.frame(feature = colnames(enrich_res_OR), cluster = col_cols)
+
+new_row_cols = get_ggColorHue(6)
+tmp_row_cols = unique(row_cols)
+row_cols[row_cols==tmp_row_cols[1]] = new_row_cols[4]
+row_cols[row_cols==tmp_row_cols[2]] = new_row_cols[3]
+
+tmp_col_cols = unique(col_cols)
+col_cols[col_cols==tmp_col_cols[1]] = new_row_cols[5]
+col_cols[col_cols==tmp_col_cols[2]] = new_row_cols[6]
+
+heatmap(as.matrix(enrich_res_OR), 
+        hclustfun=function(d) hclust(d, method=clust_method),
+        scale = "none",
+        RowSideColors=row_cols, 
+        ColSideColors=col_cols)
+
+# plot this so you can screenshot the color scale 
+ggheatmap(as.matrix(enrich_res_OR), color=colorRampPalette(hcl.colors(12, "YlOrRd", rev = TRUE))(100), scale="none",legendName="OR")
+
+subtype_df = data.frame(subid = rownames(enrich_res_OR), subtype = row_subtype)
+table(subtype_df$subtype)
+enrich_res_OR$subid = rownames(enrich_res_OR)
+
+df2plot = merge(enrich_res_OR, subtype_df, by = "subid")
+rownames(df2plot) = df2plot$subid
+df2plot$subtype = factor(df2plot$subtype)
+df4plot = melt(df2plot, id.vars = c("subid","subtype"))
+
+h_test_res = list()
+res_colnames = c("feature","t","p","d")
+
+for (subtype in unique(row_subtype)){
+  subtype_name = sprintf("S%d",subtype)
+  h_test_res[[subtype_name]] = data.frame(matrix(
+    nrow = length(sem_feat_names), 
+    ncol = length(res_colnames)))
+  rownames(h_test_res[[subtype_name]]) = sem_feat_names
+  colnames(h_test_res[[subtype_name]]) = res_colnames
+}
+
+for (subtype in unique(row_subtype)){
+  subtype_name = sprintf("S%d",subtype)
+  for (sem_feat in sem_feat_names){
+      h_test_res[[subtype_name]][sem_feat, "feature"] = sem_feat
+      
+      t_res = t.test(df2plot[df2plot$subtype==subtype,sem_feat], mu=1)
+      h_test_res[[subtype_name]][sem_feat, "t"] = t_res$statistic
+      h_test_res[[subtype_name]][sem_feat, "p"] = t_res$p.value
+      
+      tmp_mu = mean(df2plot[df2plot$subtype==subtype,sem_feat], na.rm = TRUE)
+      tmp_sd = sd(df2plot[df2plot$subtype==subtype,sem_feat], na.rm = TRUE)
+      h_test_res[[subtype_name]][sem_feat, "d"] = (tmp_mu-1)/tmp_sd
+  }
+  h_test_res[[subtype_name]]$fdr = p.adjust(h_test_res[[subtype_name]]$p, method = "fdr")
+}
+
+reorder_vect = order(h_test_res[["S1"]][,"t"])
+ordered_sem_feat_by_t = c("gazed","touched","operability","touch","animal",
+                          "sound","smell","nonsocial","taste","text","watchability",
+                          "social","face","human","emotion","motion")
+for (subtype in unique(row_subtype)){
+  subtype_name = sprintf("S%d",subtype)
+  print(subtype_name)
+  print(h_test_res[[subtype_name]][ordered_sem_feat_by_t,])
+}
+
+df4plot$variable = factor(df4plot$variable, levels = ordered_sem_feat_by_t)
+colnames(df4plot)[colnames(df4plot)=="variable"] = "feature"
+colnames(df4plot)[colnames(df4plot)=="value"] = "OR"
+feature_clusters$feature = factor(feature_clusters$feature, levels = levels(df4plot$feature))
+df4plot$feature_cluster = NA
+for (ifeat in 1:length(sem_feat_names)){
+  feature_name2use = sem_feat_names[ifeat]
+  cluster2use = feature_clusters[feature_clusters$feature==feature_name2use, "cluster"]
+  df4plot$feature_cluster[df4plot$feature==feature_name2use] = cluster2use
+}
+df4plot$feature_cluster = factor(df4plot$feature_cluster)
+fingerprint_profiles = df4plot
+
+p = ggplot(data = df4plot, aes(x = feature, y = OR, colour=feature_cluster)) + 
+  facet_grid(subtype ~ .) + 
+  geom_scatterbox() + 
+  geom_hline(yintercept=1) + 
+  xlab("Semantic Features") + 
+  ylab("Odds Ratio") +
+  scale_colour_manual(values = c("#F564E3","#619CFF")) +
+  guides(colour=FALSE) +
+  coord_flip() + ggtitle(plot_title_name) + easy_center_title()
+ggsave(p, filename = file.path(plot_path, "fingerprintable_stimuli_semantic_enrichment.pdf"),
+       width = 4, height = 5)
+p
+```
+
