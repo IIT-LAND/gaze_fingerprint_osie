@@ -287,7 +287,7 @@ data2plot$cluster[is.element(data2plot$feature,yellow_clust)] = "yellow"
 data2plot$cluster_color[is.element(data2plot$feature,yellow_clust)] = "#FFFF33"
 
 data2plot$cluster = factor(data2plot$cluster)
-data2plot$feature = factor(data2plot$feature, levels = rev(c("watchability","touched","human","social","face","taste","touch","motion","emotion","text","operability","gazed","nonsocial","smell","sound","animal")))
+data2plot$feature = factor(data2plot$feature, levels = rev(c("face","touched","motion","watchability","human","social","nonsocial","text","taste","touch","emotion","gazed","operability","sound","smell","animal")))
 
 # load in bootstrap accuracy for all stimuli
 bootaccall = read.csv(file.path(resultpath,"bootstrap_accuracy_95CIs.csv"))
@@ -630,14 +630,15 @@ nbclust_index = c("kl","ch","cindex","db","silhouette","duda","pseudot2",
 res = NbClust(data = t(enrich_res_OR), method = clust_method, index=nbclust_index)
 a = data.frame(res$Best.nc[1,]); colnames(a) = "k"; a$index = rownames(a)
 best_nk = as.numeric(names(table(a$k))[table(a$k)==max(table(a$k))])
-res = NbClust(data = t(enrich_res_OR), method = clust_method, index="kl")
+# res = NbClust(data = t(enrich_res_OR), method = clust_method, index="kl")
+res = NbClust(data = t(enrich_res_OR), method = clust_method, index="mcclain")
 col_cols = brewer.pal(9, "Set1")[res$Best.partition]
 feature_clusters = data.frame(feature = colnames(enrich_res_OR), cluster = col_cols)
 
 new_row_cols = get_ggColorHue(6)
 tmp_row_cols = unique(row_cols)
-row_cols[row_cols==tmp_row_cols[1]] = new_row_cols[4]
-row_cols[row_cols==tmp_row_cols[2]] = new_row_cols[3]
+row_cols[row_cols==tmp_row_cols[1]] = new_row_cols[3]
+row_cols[row_cols==tmp_row_cols[2]] = new_row_cols[4]
 
 tmp_col_cols = unique(col_cols)
 col_cols[col_cols==tmp_col_cols[1]] = new_row_cols[5]

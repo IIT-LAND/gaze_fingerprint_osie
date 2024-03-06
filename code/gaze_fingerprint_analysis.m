@@ -68,7 +68,7 @@ end % function parse_input_args
 function path_info = get_paths(RUNONSERVER)
 
 if RUNONSERVER
-  path_info.rootpath = '/media/DATA/Scratch/mlombardo/gaze_fingerprinting'; 
+  path_info.rootpath = '/media/DATA/Scratch/mlombardo/gaze_fingerprinting';
 else
   path_info.rootpath = '/Users/mlombardo/Dropbox/data/land_eye_tracking_data/gaze_fingerprinting';
 end % if RUNONSERVER
@@ -92,7 +92,7 @@ exp_info.fstem = sprintf('weight_%s',WEIGHT);
 exp_info.plot_fstem = '.jpeg'; % '.pdf';
 
 % smoothing radius for fixation heatmap
-exp_info.smoothing_radius = 24;
+exp_info.smoothing_radius = 22;
 
 % k nearest neighbors parameter
 exp_info.k = 1;
@@ -535,6 +535,20 @@ fp_res.fingerprint_ratios = nan(fp_res.nsubs, 1);
 
 fp_res.final_r = [gsa_res_tmp.intrasubject_r, gsa_res_tmp.intersubject_r];
 
+%===start new addition to fix bug 05.07.2023===============================
+
+% the bug to fix is related to the fact that we have to take the id_mat in 
+% gsa_res.id_mat and symmetrize it along the diagonal. Currently, that
+% id_mat is not symmetrized along the diagonal. Instead, the upper triangle
+% reflects session 1 target compared to session 2 distractors. The lower
+% triangle has distractors from session 1. Because the intrasubject
+% correlation is always session 1 of the target subject to session 2 of the
+% target subject, we need to take the intersubject correlations computed
+% when session 2 of the distractor subjects are used. Therefore, we need to
+% take the id_mat and grab the upper triangle and replace the lower
+% triangle with the values in the upper triangle. Once this is done, we can
+% take that symmetrized id_mat and just grab each row and find the biggest.
+
 id_mat = gsa_res_tmp.id_mat;
 id_mat_symm = id_mat;
 % tmp_mat = squeeze(id_mat(:,:,1));
@@ -543,10 +557,23 @@ tmp_mat = id_mat';
 id_mat_symm(mask) = tmp_mat(mask); 
 id_mat = id_mat_symm;
 
+%===end new addition to fix bug 05.07.2023=================================
+
 for isub = 1:fp_res.nsubs
 
+    %===start new addition to fix bug 05.07.2023===========================
+    
+    % --- old code --------------------------------------------------------
+    % find subject with the maximal correlation with target
+    % tmp_vect = gsa_res_tmp.id_mat(isub,:);
+    % --- old code --------------------------------------------------------
+
+    % --- updated code fixing bug -----------------------------------------
     % find subject with the maximal correlation with target
     tmp_vect = id_mat(isub,:);
+    % --- updated code fixing bug -----------------------------------------
+    
+    %===end new addition to fix bug 05.07.2023=============================
 
     % what is the max gaze similarity correlation
     max_corr = max(tmp_vect);
@@ -576,6 +603,64 @@ end % for isub
 
 end % function fingerprint_classification
 
+
+% %% compute_entropy function
+% function results = compute_entropy(target, exp_info, input_args, path_info)
+% 
+% nsubs = target.nsubs;
+% nstim = exp_info.nstim;
+% stim_dim = exp_info.stim_dim;
+% smoothing_radius = exp_info.smoothing_radius;
+% WEIGHT = input_args.WEIGHT;
+% stimpath = path_info.stimpath;
+% 
+% % pre-allocate memory
+% entropy_fixhmap = zeros(nsubs,2);
+% 
+% disp('Computing entropy');
+% 
+% parfor isub = 1:nsubs
+% 
+%     % pre-allocate memory
+%     data4entropy1 = zeros(stim_dim(1), stim_dim(2), nstim);
+%     data4entropy2 = zeros(stim_dim(1), stim_dim(2), nstim);
+%     res = zeros(stim_dim(1), stim_dim(2));
+%     mean_fixhmap1 = zeros(stim_dim(1), stim_dim(2));
+%     mean_fixhmap2 = zeros(stim_dim(1), stim_dim(2));
+% 
+%     for istim = 1:nstim
+% 
+%         imgname = fullfile(stimpath, sprintf('1%03d.jpg',istim));
+% 
+%         % session 1
+%         fixationdata2use = target.fixations.sess01{isub}{istim};
+%         mask = isempty(fixationdata2use.fixX);
+%         if ~mask
+%             data4entropy1(:,:,istim) = fixationHeatmap(fixationdata2use, imgname, smoothing_radius, 0, NaN, WEIGHT);
+%         else
+%             data4entropy1(:,:,istim) = zeros(stim_dim(1), stim_dim(2));
+%         end % if ~mask
+% 
+%         % session 2
+%         fixationdata2use = target.fixations.sess02{isub}{istim};
+%         mask = isempty(fixationdata2use.fixX);
+%         if ~mask
+%             data4entropy2(:,:,istim) = fixationHeatmap(fixationdata2use, imgname, smoothing_radius, 0, NaN, WEIGHT);
+%         else
+%             data4entropy2(:,:,istim) = zeros(stim_dim(1), stim_dim(2));
+%         end % if ~mask
+%     end % for istim
+% 
+%     % calculate mean fixation heatmap over all stimuli --------------------
+%     mean_fixhmap1 = mean(data4entropy1, 3, 'omitnan');
+%     mean_fixhmap2 = mean(data4entropy2, 3, 'omitnan');
+%     entropy_fixhmap(isub,:) = [entropy(mean_fixhmap1), entropy(mean_fixhmap2)];
+% 
+% end % parfor isub = 1:nsubs
+% 
+% results.entropy = entropy_fixhmap;
+% 
+% end % function compute_entropy
 
 
 %% compute stationary entropy over all stimuli put together
@@ -942,6 +1027,16 @@ catch
     data2useY = data.fix_y;
     dataDuration = data.fix_duration;
 end % try
+
+% remove out of bound coordinates
+mask1 = data2useX>w | data2useX<1;
+mask2 = data2useY>h | data2useY<1;
+oob_mask = mask1 | mask2;
+if sum(oob_mask)>0
+    data2useX(oob_mask) = [];
+    data2useY(oob_mask) = [];
+    dataDuration(oob_mask) = [];
+end % if sum(oob_mask)>0
 
 fix_x = max(1, min(round(data2useX), w));
 fix_y = max(1, min(round(data2useY), h));

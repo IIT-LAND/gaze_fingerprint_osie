@@ -130,6 +130,13 @@ mask = mask1 & mask2
 pheno_data_sub = pheno_data %>% filter(mask)
 describe(pheno_data_sub)
 table(pheno_data_sub$sex)
+
+# test for difference in calibration errors between session 1 and 2
+tmp_df = melt(pheno_data_sub[,c("subj_ID","S1_CalError_OSIE","S2_CalError_OSIE")], id.vars = "subj_ID")
+t_res = t.test(x = tmp_df$value[tmp_df$variable=="S1_CalError_OSIE"], 
+               y = tmp_df$value[tmp_df$variable=="S2_CalError_OSIE"],
+               paired = TRUE)
+t_res
 ```
 
 
@@ -299,7 +306,7 @@ data2plot$cluster[is.element(data2plot$feature,yellow_clust)] = "yellow"
 data2plot$cluster_color[is.element(data2plot$feature,yellow_clust)] = "#FFFF33"
 
 data2plot$cluster = factor(data2plot$cluster)
-data2plot$feature = factor(data2plot$feature, levels = rev(c("taste","watchability","text","face","human","social","operability","touch","touched","nonsocial","motion","smell","gazed","emotion","animal","sound")))
+data2plot$feature = factor(data2plot$feature, levels = rev(c("taste","operability","watchability","text","face","smell","touch","touched","human","social","motion","gazed","nonsocial","emotion","animal","sound")))
 
 # load in bootstrap accuracy for all stimuli
 bootaccall = read.csv(file.path(resultpath,"bootstrap_accuracy_95CIs.csv"))
@@ -606,11 +613,11 @@ rownames(nfp_res) = rownames(df_res)
 colnames(nfp_res) = c("nFP")
 
 for (isub in 1:nsubs){
-  
+
   nFP = sum(df_res[isub,])
   nfp_res[isub,1] = nFP
   fp_mask = df_res[isub,]==1
-  
+
   for (isf in 1:length(sem_feat_names)){
     semfeat2use = sem_feat_names[isf]
     nSemantic = sum(df_sem_feat[,semfeat2use])
@@ -618,9 +625,9 @@ for (isub in 1:nsubs){
     tmp_enrich_res = enrichmentTest(nFP_given_Semantic, nFP, nSemantic, nTotal)
     enrich_res_OR[isub,semfeat2use] = tmp_enrich_res$OR
     enrich_res_P[isub,semfeat2use] = tmp_enrich_res$p
-    
+
   } # for (isf in 1:length(sem_feat_names)){
-  
+
 } # for (isub in 1:nsubs){
 
 clust_method = "ward.D2"
@@ -640,7 +647,8 @@ nbclust_index = c("kl","ch","cindex","db","silhouette","duda","pseudot2",
 res = NbClust(data = t(enrich_res_OR), method = clust_method, index=nbclust_index)
 a = data.frame(res$Best.nc[1,]); colnames(a) = "k"; a$index = rownames(a)
 best_nk = as.numeric(names(table(a$k))[table(a$k)==max(table(a$k))])
-res = NbClust(data = t(enrich_res_OR), method = clust_method, index="cindex")
+# res = NbClust(data = t(enrich_res_OR), method = clust_method, index="cindex")
+res = NbClust(data = t(enrich_res_OR), method = clust_method, index="mcclain")
 col_cols = brewer.pal(9, "Set1")[res$Best.partition]
 feature_clusters = data.frame(feature = colnames(enrich_res_OR), cluster = col_cols)
 
@@ -653,13 +661,13 @@ tmp_col_cols = unique(col_cols)
 col_cols[col_cols==tmp_col_cols[1]] = new_row_cols[5]
 col_cols[col_cols==tmp_col_cols[2]] = new_row_cols[6]
 
-heatmap(as.matrix(enrich_res_OR), 
+heatmap(as.matrix(enrich_res_OR),
         hclustfun=function(d) hclust(d, method=clust_method),
         scale = "none",
-        RowSideColors=row_cols, 
+        RowSideColors=row_cols,
         ColSideColors=col_cols)
 
-# plot this so you can screenshot the color scale 
+# plot this so you can screenshot the color scale
 ggheatmap(as.matrix(enrich_res_OR), color=colorRampPalette(hcl.colors(12, "YlOrRd", rev = TRUE))(100), scale="none",legendName="OR")
 
 subtype_df = data.frame(subid = rownames(enrich_res_OR), subtype = row_subtype)
@@ -677,7 +685,7 @@ res_colnames = c("feature","t","p","d")
 for (subtype in unique(row_subtype)){
   subtype_name = sprintf("S%d",subtype)
   h_test_res[[subtype_name]] = data.frame(matrix(
-    nrow = length(sem_feat_names), 
+    nrow = length(sem_feat_names),
     ncol = length(res_colnames)))
   rownames(h_test_res[[subtype_name]]) = sem_feat_names
   colnames(h_test_res[[subtype_name]]) = res_colnames
@@ -687,11 +695,11 @@ for (subtype in unique(row_subtype)){
   subtype_name = sprintf("S%d",subtype)
   for (sem_feat in sem_feat_names){
       h_test_res[[subtype_name]][sem_feat, "feature"] = sem_feat
-      
+
       t_res = t.test(df2plot[df2plot$subtype==subtype,sem_feat], mu=1)
       h_test_res[[subtype_name]][sem_feat, "t"] = t_res$statistic
       h_test_res[[subtype_name]][sem_feat, "p"] = t_res$p.value
-      
+
       tmp_mu = mean(df2plot[df2plot$subtype==subtype,sem_feat], na.rm = TRUE)
       tmp_sd = sd(df2plot[df2plot$subtype==subtype,sem_feat], na.rm = TRUE)
       h_test_res[[subtype_name]][sem_feat, "d"] = (tmp_mu-1)/tmp_sd
@@ -726,11 +734,11 @@ for (ifeat in 1:length(sem_feat_names)){
 df4plot$feature_cluster = factor(df4plot$feature_cluster)
 fingerprint_profiles = df4plot
 
-p = ggplot(data = df4plot, aes(x = feature, y = OR, colour=feature_cluster)) + 
-  facet_grid(subtype ~ .) + 
-  geom_scatterbox() + 
-  geom_hline(yintercept=1) + 
-  xlab("Semantic Features") + 
+p = ggplot(data = df4plot, aes(x = feature, y = OR, colour=feature_cluster)) +
+  facet_grid(subtype ~ .) +
+  geom_scatterbox() +
+  geom_hline(yintercept=1) +
+  xlab("Semantic Features") +
   ylab("Odds Ratio") +
   scale_colour_manual(values = c("#F564E3","#619CFF")) +
   guides(colour=FALSE) +
@@ -808,6 +816,88 @@ p = ggplot(data = new_df, aes(x = nfingerprintable_stimuli, y = all)) +
   xlab("Fingerprintable Stimuli") + ylab("Median Gaze Uniqueness Index (GUI)")
 ggsave(p, filename = file.path(plot_path, "nfingerprintable_stimuli_by_medianGUI.pdf"))
 p
+
+
+# Predicting fingerprinting simply by data quality metrics
+
+# run linear model with FP PC1 predicted by session 1 calibration error
+form2use = as.formula(sprintf("fp_pc1 ~ %s","S1_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+# run linear model with FP PC1 predicted by session 2 calibration error
+form2use = as.formula(sprintf("fp_pc1 ~ %s","S2_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+
+# run linear model with nfingerprintable_stimuli predicted by session 1 calibration error
+form2use = as.formula(sprintf("nfingerprintable_stimuli ~ %s","S1_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+# run linear model with nfingerprintable_stimuli predicted by session 2 calibration error
+form2use = as.formula(sprintf("nfingerprintable_stimuli ~ %s","S2_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+
+# run linear model with GUI predicted by session 1 calibration error
+form2use = as.formula(sprintf("all ~ %s","S1_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+# run linear model with GUI predicted by session 2 calibration error
+form2use = as.formula(sprintf("all ~ %s","S2_CalError_OSIE"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+
+# Using IQ as a predictor of gaze fingerprinting or autistic traits
+
+# run linear model with FP PC1 predicted by IQ
+form2use = as.formula(sprintf("fp_pc1 ~ %s","IQ"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+# run linear model with autistic traits PC1 predicted by IQ
+form2use = as.formula(sprintf("at_pc1 ~ %s","IQ"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+
+
+# Predicting autistic traits with fingerprintability
+
+# run linear model with sex and FP PC1 and PC2 predicting AQ
+form2use = as.formula(sprintf("AQ_Tot ~ sex + %s + %s","fp_pc1","fp_pc2"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
+
+# run linear model with sex and FP PC1 and PC2 predicting SRS
+form2use = as.formula(sprintf("SRS_Tot_Raw ~ sex + %s + %s","fp_pc1","fp_pc2"))
+mod2use = lmrob(data = new_df, formula = form2use)
+summary(mod2use)$coefficients
+summary(mod2use)$r.squared
+summary(mod2use)$adj.r.squared
 
 # run linear model with sex and FP PC1 and PC2 predicting autistic traits PC1
 form2use = as.formula(sprintf("at_pc1 ~ sex + %s + %s","fp_pc1","fp_pc2"))
