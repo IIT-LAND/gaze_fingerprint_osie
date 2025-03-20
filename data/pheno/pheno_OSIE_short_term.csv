@@ -1,0 +1,8 @@
+﻿subj_ID,dataset,data_directory_name,target_use,comparison_use,target_session_name,comparison_session_name,comparison_session_name_3,comparison_session_name_4,comparison_session_name_5,sex,age_at_sess1,test_retest_delay_12,test_retest_delay_13,test_retest_delay_14,test_retest_delay_15,usable_OSIE,S1_CalError_OSIE,S2_CalError_OSIE,S3_CalError_OSIE,S4_CalError_OSIE,S5_CalError_OSIE
+r516zuza5C,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,F,23,7,21,35,56,Y,0.299,0.408,0.398,0.47,0.532
+o88to65Hh6,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,F,21,8,36,57,94,Y,0.407,0.384,0.22,0.365,0.562
+ko6ev8i96G,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,M,27,10,31,38,79,Y,0.376,0.244,0.428,0.336,0.616
+aKbhw1o3ht,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,M,27,8,24,35,66,Y,0.311,0.293,0.336,0.206,0.206
+ob4d9U2rvj,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,F,22,8,19,35,78,Y,0.381,0.427,0.314,0.456,0.259
+iLb7x9t472,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,F,25,12,26,38,61,Y,0.297,0.487,0.834,1.074,0.256
+ei9s37d74H,IIT,preprocessed_exp2,Yes,Yes,session_01,session_02,session_03,session_04,session_05,M,27,7,21,35,70,Y,0.465,0.358,0.478,0.462,0.433

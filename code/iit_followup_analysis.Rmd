@@ -1,0 +1,500 @@
+---
+title: "IIT Follow-Up Analysis"
+output: html_document
+---
+
+```{r, warning=FALSE, message=FALSE}
+library(easypackages)
+libraries("here","ggplot2","ggridges","reshape2","patchwork","RColorBrewer",
+          "plotrix","tidyverse","cluster","ggpackets","wordcloud","proxy",
+          "ggeasy","NbClust","MASS","robustbase","MKinfer","impute","ggheatmap", 
+          "janitor", "lme4", "lmtest","matlabr","psych",
+          "lmerTest","tidyverse","ggeffects")
+
+codepath = here("code") 
+source(file.path(codepath,"utils.R"))
+resultpath = here("results_barcode_comparison") # 
+datapath = here("data") 
+plotpath = here("plots") 
+
+followup_resultpath = file.path(resultpath, "original_followup")
+new_resultpath = file.path(resultpath, "new_five_repeats")
+
+plot_title_name = "IIT"
+
+WEIGHT = "none"
+
+nstimuli = 700
+fdr_thresh = 0.05
+nperm = 10000
+
+clust_method = "ward.D2"
+dist_method = "binary" 
+nbc_index = "silhouette"
+```
+
+```{r}
+
+get_jaccard_similarity <- function(s12, s13, dist_method="binary"){
+  my_mat = as.matrix(rbind(s12,s13))
+  jaccard_mat = as.matrix(dist(my_mat, method=dist_method))
+  return(jaccard_mat[1,2])
+}
+
+perm_sim <- function(s12, s13, actual_sim, dist_method="binary",nperm=10000, seed2use=999){
+  set.seed(seed2use)
+  perm_res = vector(length = nperm)
+  for (iperm in 1:nperm){
+    #print(iperm)
+    perm_s13 = sample(as.numeric(s13))
+    perm_res[iperm] = get_jaccard_similarity(s12 = s12, s13 = perm_s13, dist_method = dist_method)
+  }
+  p_val = (sum(perm_res<=actual_sim)+1) / (nperm+1)
+  
+  results = list(p_val = p_val, perm_res = perm_res)
+  return(results)
+}
+
+
+```
+
+## Read in data files
+
+```{r, warning=FALSE, message=FALSE}
+stim_names = character(length=nstimuli)
+stim_ids = character(length=nstimuli)
+for (i in 1:nstimuli){
+  stim_names[i] = sprintf("stim%03d",i)
+  stim_ids[i] = sprintf("1%03d",i)
+}
+
+#read in phenotypic data
+pheno_data = read.csv(here("data","pheno","pheno_OSIE_long_term.csv"))
+
+# intra subs from the follow up data
+# intrasubject correlation subject by stimulus
+fname = file.path(followup_resultpath,
+                  sprintf("weight_%s_intrasubjectR_perSubStim.csv",
+                          WEIGHT))
+intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(intrasubR_sub_by_stim) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 2)
+fname = file.path(followup_resultpath,"session1_2_classification_accuracy_perSubStim.csv")
+original_classifier = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(original_classifier) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 3)
+fname = file.path(followup_resultpath,"session1_3_classification_accuracy_perSubStim.csv")
+follow_up_classifier = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(follow_up_classifier) = stim_ids
+
+# grab usable data
+na_mask = rowSums(is.na(intrasubR_sub_by_stim))>(700*0.15)
+subs2exclude = rownames(intrasubR_sub_by_stim)[na_mask]
+mask1 = is.element(pheno_data$subj_ID,rownames(intrasubR_sub_by_stim))
+mask2 = !is.element(pheno_data$subj_ID, subs2exclude)
+mask = mask1 & mask2
+
+pheno_data_sub = pheno_data %>% filter(mask)
+table(pheno_data_sub$sex)
+
+# subset original classifier data
+mask1 = is.element(rownames(original_classifier),
+                   rownames(intrasubR_sub_by_stim))
+mask2 = !is.element(rownames(original_classifier), 
+                    subs2exclude)
+mask = mask1 & mask2
+original_classifier_sub = original_classifier %>% filter(mask)
+
+# subset follow up classifier data
+mask1 = is.element(rownames(follow_up_classifier),
+                   rownames(intrasubR_sub_by_stim))
+mask2 = !is.element(rownames(follow_up_classifier), 
+                    subs2exclude)
+mask = mask1 & mask2
+follow_up_classifier_sub = follow_up_classifier %>% filter(mask)
+
+# test for difference in calibration errors between session 1 and 2
+tmp_df = melt(pheno_data_sub[,c("subj_ID","S1_CalError_OSIE","S3_CalError_OSIE")], id.vars = "subj_ID")
+t_res = t.test(x = tmp_df$value[tmp_df$variable=="S1_CalError_OSIE"], 
+               y = tmp_df$value[tmp_df$variable=="S3_CalError_OSIE"],
+               paired = TRUE)
+t_res
+
+```
+
+```{r}
+
+new_pheno_data = read.csv(here("data","pheno","pheno_OSIE_short_term.csv"))
+
+# sub new subject data by correct list
+new_pheno_data_sub = subset(new_pheno_data, comparison_use == "Yes")
+
+#data from new subjects
+#intrasubject correlation subject by stimulus
+fname = file.path(new_resultpath,"session1_2_intrasubjectR_perSubStim.csv")
+new_12_intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_12_intrasubR_sub_by_stim) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 2)
+fname = file.path(new_resultpath,"session1_2_classification_accuracy_perSubStim.csv")
+new_sess12_classifier_tmp = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_sess12_classifier_tmp) = stim_ids
+
+# subset original classifier data
+mask1 = is.element(rownames(new_sess12_classifier_tmp),
+                   new_pheno_data_sub$subj_ID)
+new_sess12_classifier = new_sess12_classifier_tmp %>% filter(mask1)
+
+#intrasubject correlation subject by stimulus
+fname = file.path(new_resultpath,"session1_3_intrasubjectR_perSubStim.csv")
+new_13_intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_13_intrasubR_sub_by_stim) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 3)
+fname = file.path(new_resultpath,"session1_3_classification_accuracy_perSubStim.csv")
+new_sess13_classifier_tmp = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_sess13_classifier_tmp) = stim_ids
+
+# subset original classifier data
+mask1 = is.element(rownames(new_sess13_classifier_tmp),
+                   new_pheno_data_sub$subj_ID)
+new_sess13_classifier = new_sess13_classifier_tmp %>% filter(mask1)
+
+#intrasubject correlation subject by stimulus
+fname = file.path(new_resultpath,"session1_4_intrasubjectR_perSubStim.csv")
+new_14_intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_14_intrasubR_sub_by_stim) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 4)
+fname = file.path(new_resultpath,"session1_4_classification_accuracy_perSubStim.csv")
+new_sess14_classifier_tmp = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_sess14_classifier_tmp) = stim_ids
+
+# subset 
+mask1 = is.element(rownames(new_sess14_classifier_tmp),
+                   new_pheno_data_sub$subj_ID)
+new_sess14_classifier = new_sess14_classifier_tmp %>% filter(mask1)
+
+#intrasubject correlation subject by stimulus
+fname = file.path(new_resultpath,"session1_5_intrasubjectR_perSubStim.csv")
+new_15_intrasubR_sub_by_stim = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_15_intrasubR_sub_by_stim) = stim_ids
+
+# classifier output [0,1] subjects BY stimuli (session 1 to 5)
+fname = file.path(new_resultpath,"session1_5_classification_accuracy_perSubStim.csv")
+new_sess15_classifier_tmp = read.csv(fname, row.names=1, na.strings = "NaN")
+colnames(new_sess15_classifier_tmp) = stim_ids
+
+# subset original classifier data
+mask1 = is.element(rownames(new_sess15_classifier_tmp),
+                   new_pheno_data_sub$subj_ID)
+new_sess15_classifier = new_sess15_classifier_tmp %>% filter(mask1)
+
+# grab usable data from new people
+na_mask = rowSums(is.na(new_12_intrasubR_sub_by_stim))>(700*0.15)
+subs2exclude = rownames(new_12_intrasubR_sub_by_stim)[na_mask]
+mask1 = is.element(new_pheno_data_sub$subj_ID,rownames(new_12_intrasubR_sub_by_stim))
+mask2 = !is.element(new_pheno_data_sub$subj_ID, subs2exclude)
+mask = mask1 & mask2
+new_pheno_data_sub_12 = new_pheno_data_sub %>% filter(mask)
+new_sess12_classifier = new_sess12_classifier %>% filter(mask)
+
+na_mask = rowSums(is.na(new_13_intrasubR_sub_by_stim))>(700*0.15)
+subs2exclude = rownames(new_13_intrasubR_sub_by_stim)[na_mask]
+mask1 = is.element(new_pheno_data_sub$subj_ID,rownames(new_13_intrasubR_sub_by_stim))
+mask2 = !is.element(new_pheno_data_sub$subj_ID, subs2exclude)
+mask = mask1 & mask2
+new_pheno_data_sub_13 = new_pheno_data_sub %>% filter(mask)
+new_sess13_classifier = new_sess13_classifier %>% filter(mask)
+
+na_mask = rowSums(is.na(new_14_intrasubR_sub_by_stim))>(700*0.15)
+subs2exclude = rownames(new_14_intrasubR_sub_by_stim)[na_mask]
+mask1 = is.element(new_pheno_data_sub$subj_ID,rownames(new_14_intrasubR_sub_by_stim))
+mask2 = !is.element(new_pheno_data_sub$subj_ID, subs2exclude)
+mask = mask1 & mask2
+new_pheno_data_sub_14 = new_pheno_data_sub %>% filter(mask)
+new_sess14_classifier = new_sess14_classifier %>% filter(mask)
+
+na_mask = rowSums(is.na(new_15_intrasubR_sub_by_stim))>(700*0.15)
+subs2exclude = rownames(new_15_intrasubR_sub_by_stim)[na_mask]
+mask1 = is.element(new_pheno_data_sub$subj_ID,rownames(new_15_intrasubR_sub_by_stim))
+mask2 = !is.element(new_pheno_data_sub$subj_ID, subs2exclude)
+mask = mask1 & mask2
+new_pheno_data_sub_15 = new_pheno_data_sub %>% filter(mask)
+new_sess15_classifier = new_sess15_classifier %>% filter(mask)
+
+print(nrow(new_pheno_data_sub_12))
+print(nrow(new_sess12_classifier))
+print(nrow(new_pheno_data_sub_13))
+print(nrow(new_sess13_classifier))
+print(nrow(new_pheno_data_sub_14))
+print(nrow(new_sess14_classifier))
+print(nrow(new_pheno_data_sub_15))
+print(nrow(new_sess15_classifier))
+
+```
+
+# Compare session 1 to 2 to session 1 to 3 in original follow up subjects
+
+```{r}
+subids = rownames(original_classifier_sub)
+result_df = data.frame(matrix(nrow = length(subids), ncol = 3))
+rownames(result_df) = subids
+colnames(result_df) = c("similarity","p_value","mean_perm_sim")
+for (sub in subids){
+  print(sub)
+  s12 = original_classifier_sub[sub,]
+  s13 = follow_up_classifier_sub[sub,]  
+  res2use = get_jaccard_similarity(s12=s12,
+                                   s13=s13,
+                                   dist_method = dist_method)
+  result_df[sub, "similarity"] = res2use
+  perm_res = perm_sim(s12 = s12,
+                      s13 = s13,
+                      actual_sim = res2use,
+                      dist_method = dist_method,
+                      nperm=nperm,
+                      seed2use=999)
+  result_df[sub,"p_value"] = perm_res[[1]]
+  result_df[sub,"mean_perm_sim"] = mean(perm_res[[2]], na.rm=TRUE)
+}
+
+alpha2use = 0.05
+sig_count = sum(result_df[,"p_value"]<=alpha2use)
+# Perform the binomial test
+binomial_result = binom.test(sig_count,length(subids), alpha2use, alternative = "greater")
+
+# Print the result
+print(binomial_result)
+
+result_df$subids = rownames(result_df)
+write_csv(result_df, file.path(followup_resultpath, "fp_results_df.csv"))
+
+# test for correlation between similarity and delay between session 1 and 3
+pheno_data_long = pheno_data
+colnames(pheno_data_long)[1] = "subids"
+tmp_df_long = pheno_data_long[,c("subids","test_retest_delay","test_s1_s3_delay")]
+result_df2 = merge(result_df, tmp_df_long, by = "subids")
+
+cor.test(result_df2$test_s1_s3_delay, result_df2$similarity)
+
+p = ggplot(data = result_df2, aes(x = test_s1_s3_delay, y = similarity)) + geom_point() + geom_smooth(method = lm)
+p
+```
+
+# Compare sessions 1-2 to 1-3 in the short-term follow-up dataset
+
+```{r}
+rm(result_df)
+subids = rownames(new_sess13_classifier)
+result_df = data.frame(matrix(nrow = length(subids), ncol = 3))
+rownames(result_df) = subids
+colnames(result_df) = c("similarity","p_value","mean_perm_sim")
+
+for (sub in subids){
+  print(sub)
+  first_sess = new_sess12_classifier[sub,]
+  last_sess = new_sess13_classifier[sub,]
+  res2use = get_jaccard_similarity(s12=first_sess,
+                                   s13=last_sess,
+                                   dist_method = dist_method)
+  result_df[sub, "similarity"] = res2use
+  perm_res = perm_sim(s12 = first_sess,
+                      s13 = last_sess,
+                      actual_sim = res2use,
+                      dist_method = dist_method,
+                      nperm=nperm,
+                      seed2use=999)
+  result_df[sub,"p_value"] = perm_res[[1]]
+  result_df[sub,"mean_perm_sim"] = mean(perm_res[[2]], na.rm=TRUE)
+}
+
+alpha2use = 0.05
+sig_count = sum(result_df[,"p_value"]<=alpha2use)
+# Perform the binomial test
+binomial_result = binom.test(sig_count,length(subids), alpha2use, alternative = "greater")
+
+# Print the result
+print(binomial_result)
+
+result_df$subids = rownames(result_df)
+write_csv(result_df, file.path(new_resultpath, "fp_results_df_13.csv"))
+```
+
+
+# Compare sessions 1-2 to 1-4 in the short-term follow-up dataset
+
+```{r}
+rm(result_df)
+subids = rownames(new_sess14_classifier)
+result_df = data.frame(matrix(nrow = length(subids), ncol = 3))
+rownames(result_df) = subids
+colnames(result_df) = c("similarity","p_value","mean_perm_sim")
+
+for (sub in subids){
+  print(sub)
+  first_sess = new_sess12_classifier[sub,]
+  last_sess = new_sess14_classifier[sub,]
+  res2use = get_jaccard_similarity(s12=first_sess,
+                                   s13=last_sess,
+                                   dist_method = dist_method)
+  result_df[sub, "similarity"] = res2use
+  perm_res = perm_sim(s12 = first_sess,
+                      s13 = last_sess,
+                      actual_sim = res2use,
+                      dist_method = dist_method,
+                      nperm=nperm,
+                      seed2use=999)
+  result_df[sub,"p_value"] = perm_res[[1]]
+  result_df[sub,"mean_perm_sim"] = mean(perm_res[[2]], na.rm=TRUE)
+}
+
+alpha2use = 0.05
+sig_count = sum(result_df[,"p_value"]<=alpha2use)
+# Perform the binomial test
+binomial_result = binom.test(sig_count,length(subids), alpha2use, alternative = "greater")
+
+# Print the result
+print(binomial_result)
+
+result_df$subids = rownames(result_df)
+write_csv(result_df, file.path(new_resultpath, "fp_results_df_14.csv"))
+```
+
+
+# Compare sessions 1-2 to 1-5 in the short-term follow-up dataset
+
+```{r}
+rm(result_df)
+subids = rownames(new_sess15_classifier)
+result_df = data.frame(matrix(nrow = length(subids), ncol = 3))
+rownames(result_df) = subids
+colnames(result_df) = c("similarity","p_value","mean_perm_sim")
+
+for (sub in subids){
+  print(sub)
+  first_sess = new_sess12_classifier[sub,]
+  last_sess = new_sess15_classifier[sub,]
+  res2use = get_jaccard_similarity(s12=first_sess,
+                                   s13=last_sess,
+                                   dist_method = dist_method)
+  result_df[sub, "similarity"] = res2use
+  perm_res = perm_sim(s12 = first_sess,
+                      s13 = last_sess,
+                      actual_sim = res2use,
+                      dist_method = dist_method,
+                      nperm=nperm,
+                      seed2use=999)
+  result_df[sub,"p_value"] = perm_res[[1]]
+  result_df[sub,"mean_perm_sim"] = mean(perm_res[[2]], na.rm=TRUE)
+}
+
+alpha2use = 0.05
+sig_count = sum(result_df[,"p_value"]<=alpha2use)
+# Perform the binomial test
+binomial_result = binom.test(sig_count,length(subids), alpha2use, alternative = "greater")
+
+# Print the result
+print(binomial_result)
+
+result_df$subids = rownames(result_df)
+write_csv(result_df, file.path(new_resultpath, "fp_results_df_15.csv"))
+```
+
+
+# Longitudinal analysis across sessions 1-5
+
+```{r}
+# read in pheno data for short-term follow-up
+pheno_short_term = read.csv(file.path(datapath, "pheno","pheno_OSIE_short_term.csv"))
+
+# session 1-3
+tmp_df = read.csv(file.path(new_resultpath, "fp_results_df_13.csv"))
+df1 = data.frame(subid = tmp_df$subids, similarity = tmp_df$similarity, condition = "real", sess="sess1-3")
+df2 = data.frame(subid = tmp_df$subids, similarity = tmp_df$mean_perm_sim, condition = "perm", sess="sess1-3")
+data2use = rbind(df1,df2)
+# add times
+mask = is.element(pheno_short_term$subj_ID, data2use$subid)
+pheno_data_st_tmp = pheno_short_term %>% filter(mask)
+pheno_data_st_tmp = pheno_data_st_tmp[,c("subj_ID","test_retest_delay_13")]
+colnames(pheno_data_st_tmp) = c("subid","time")
+data2use = merge(data2use, pheno_data_st_tmp, by = "subid")
+
+# session 1-4
+tmp_df = read.csv(file.path(new_resultpath, "fp_results_df_14.csv"))
+df1 = data.frame(subid = tmp_df$subids, similarity = tmp_df$similarity, condition = "real", sess="sess1-4")
+df2 = data.frame(subid = tmp_df$subids, similarity = tmp_df$mean_perm_sim, condition = "perm", sess="sess1-4")
+tmp_df = rbind(df1,df2)
+# add times
+mask = is.element(pheno_short_term$subj_ID, tmp_df$subid)
+pheno_data_st_tmp = pheno_short_term %>% filter(mask)
+pheno_data_st_tmp = pheno_data_st_tmp[,c("subj_ID","test_retest_delay_14")]
+colnames(pheno_data_st_tmp) = c("subid","time")
+tmp_df = merge(tmp_df, pheno_data_st_tmp, by = "subid")
+data2use = rbind(data2use,tmp_df)
+
+# session 1-5
+tmp_df = read.csv(file.path(new_resultpath, "fp_results_df_15.csv"))
+df1 = data.frame(subid = tmp_df$subids, similarity = tmp_df$similarity, condition = "real", sess="sess1-5")
+df2 = data.frame(subid = tmp_df$subids, similarity = tmp_df$mean_perm_sim, condition = "perm", sess="sess1-5")
+tmp_df = rbind(df1,df2)
+# add times
+mask = is.element(pheno_short_term$subj_ID, tmp_df$subid)
+pheno_data_st_tmp = pheno_short_term %>% filter(mask)
+pheno_data_st_tmp = pheno_data_st_tmp[,c("subj_ID","test_retest_delay_15")]
+colnames(pheno_data_st_tmp) = c("subid","time")
+tmp_df = merge(tmp_df, pheno_data_st_tmp, by = "subid")
+
+data2use = rbind(data2use,tmp_df)
+data2use = data2use %>% 
+  unite(subid2use, subid, condition, sep = ".", remove = FALSE)
+
+
+# get descriptives about delay for sessions 3-5
+
+# delay between session 1 and 3
+tmp_df = data2use %>% filter(sess=="sess1-3")
+summary(tmp_df$time)
+sd(tmp_df$time)
+
+# delay between session 1 and 4
+tmp_df = data2use %>% filter(sess=="sess1-4")
+summary(tmp_df$time)
+sd(tmp_df$time)
+
+# delay between session 1 and 5
+tmp_df = data2use %>% filter(sess=="sess1-5")
+summary(tmp_df$time)
+sd(tmp_df$time)
+
+
+
+# Fit the mixed-effects model 
+model = lmer(similarity ~ time*condition + (time|subid), data = data2use)
+anova(model)
+
+
+# Create the plot --------------------------------------------------------------
+# Compute predicted values 
+model = lmer(similarity ~ time*condition + (time | subid2use), data = data2use)
+pred = ggpredict(model, terms = c("time","condition"))
+p = ggplot(data = data2use, aes(x = time, y = similarity, colour = condition, group = subid2use)) +
+    geom_line(alpha = 0.3) +  # Individual trajectories   
+    geom_point(alpha = 0.3) + # Individual dots 
+  geom_line(data = pred, aes(x = x, y = predicted, colour=group),              
+        linewidth = 1.5,              
+        inherit.aes = FALSE) +
+  geom_ribbon(data = pred, aes(x = x, ymin = conf.low, ymax = conf.high, fill=group),
+        alpha = 0.2,
+        inherit.aes = FALSE) +  # Confidence interval
+  ylim(0.8,1) + # fix the y-axis to be 0.5 to 1
+  labs(x = "Days since session 1", y = "Jaccard Distance") + 
+  scale_colour_manual(values = c("black", "red")) +
+  scale_fill_manual(values = c("black", "red")) +
+  guides(colour="none", fill="none") +
+  theme_bw() 
+ggsave(filename = file.path(plotpath,"barcode_similarity_short_term.pdf"))
+p 
+```
